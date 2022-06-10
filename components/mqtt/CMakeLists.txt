@@ -2,8 +2,15 @@ idf_component_register(SRCS "esp-mqtt/mqtt_client.c"
                             "esp-mqtt/lib/mqtt_msg.c"
                             "esp-mqtt/lib/mqtt_outbox.c"
                             "esp-mqtt/lib/platform_esp32_idf.c"
-                    INCLUDE_DIRS esp-mqtt/include
-                    PRIV_INCLUDE_DIRS "esp-mqtt/lib/include"
+                            "esp-mqtt/lib/mqtt_connect.c"
+                            "esp-mqtt/lib/mqtt_publish_serialize.c"
+                            "esp-mqtt/lib/mqtt_publish_deserialize.c"
+                            "esp-mqtt/lib/mqtt_subscribe.c"
+                            "esp-mqtt/lib/mqtt_unsubscribe.c"
+                            "esp-mqtt/lib/mqtt_properties.c"
+                            "esp-mqtt/lib/mqtt_client_handlers.c"
+                    INCLUDE_DIRS "esp-mqtt/include"
+                                 "esp-mqtt/lib/include"
                     )
 
 if(TEST_BUILD)

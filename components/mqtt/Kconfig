@@ -1,10 +1,41 @@
 menu "ESP-MQTT Configurations"
 
-    config MQTT_PROTOCOL_311
-        bool "Enable MQTT protocol 3.1.1"
-        default y
+
+    choice
+        bool "MQTT Protocol"
+        default MQTT_PROTOCOL_50
         help
-            If not, this library will use MQTT protocol 3.1
+            Select MQTT Protocol version.
+
+        config MQTT_PROTOCOL_50
+            bool "MQTT_PROTOCOL_V5.0"
+        config MQTT_PROTOCOL_311
+            bool "MQTT_PROTOCOL_V3.1.1"
+        config MQTT_PROTOCOL_31
+            bool "MQTT_PROTOCOL_V3.1"
+    endchoice
+
+    config MQTT_PROPERTIES_MAX
+        int "Maximum number of MQTT5 properties"
+        default 10
+        depends on MQTT_PROTOCOL_50
+        help
+            Maximum number of MQTT5 properties
+
+    config MQTT_KEEP_TO_STRING
+        bool "Add translation to String for codes and names"
+        default n
+        depends on MQTT_PROTOCOL_50
+        help
+            Implement mqtt_reason_code_to_string and mqtt_property_name_to_string
+            Add translation for MQTT reason codes and properties' names to string
+
+    config MQTT_SIMUL_TOPICS_MAX
+        int "Maximum number of MQTT simultaneous topics to exchange with server"
+        default 10
+        help
+            Maximum number of MQTT topics in one single packet
+
 
     config MQTT_TRANSPORT_SSL
         bool "Enable MQTT over SSL"
