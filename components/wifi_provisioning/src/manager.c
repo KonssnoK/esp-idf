@@ -45,7 +45,8 @@ typedef enum {
     WIFI_PROV_STATE_CRED_RECV,
     WIFI_PROV_STATE_FAIL,
     WIFI_PROV_STATE_SUCCESS,
-    WIFI_PROV_STATE_STOPPING
+    WIFI_PROV_STATE_STOPPING,
+    WIFI_PROV_STATE_LTE_MODE,
 } wifi_prov_mgr_state_t;
 
 typedef enum {
@@ -928,6 +929,12 @@ static void wifi_prov_mgr_event_handler_internal(
         return;
     }
 
+    /* Do not handle events when we are in LTE mode */
+    if (prov_ctx->prov_state == WIFI_PROV_STATE_LTE_MODE) {
+        RELEASE_LOCK(prov_ctx_lock);
+        return;
+    }
+
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         ESP_LOGI(TAG, "STA Start");
         /* Once configuration is received through protocomm,
@@ -1227,6 +1234,13 @@ static void wifi_connect_timer_cb(void *arg)
     }
 }
 
+static check_lte_dummy_credentials_cb_t check_lte_dummy_credentials_cb = NULL;
+
+void wifi_prov_mgr_register_lte_dummy_credentials_check_cb(check_lte_dummy_credentials_cb_t cb)
+{
+    check_lte_dummy_credentials_cb = cb;
+}
+
 esp_err_t wifi_prov_mgr_configure_sta(wifi_config_t *wifi_cfg)
 {
     if (!prov_ctx_lock) {
@@ -1286,6 +1300,15 @@ esp_err_t wifi_prov_mgr_configure_sta(wifi_config_t *wifi_cfg)
     prov_ctx->prov_state = WIFI_PROV_STATE_CRED_RECV;
     /* Execute user registered callback handler */
     execute_event_cb(WIFI_PROV_CRED_RECV, (void *)&wifi_cfg->sta, sizeof(wifi_cfg->sta));
+
+    /* Special case if we receive LTE dummy credentials */
+    if ((check_lte_dummy_credentials_cb != NULL) &&
+        (check_lte_dummy_credentials_cb((const char*)&wifi_cfg->sta.ssid, (const char*)&wifi_cfg->sta.password))) {
+            prov_ctx->wifi_state = WIFI_PROV_STA_CONNECTED;
+            prov_ctx->prov_state = WIFI_PROV_STATE_LTE_MODE;
+            execute_event_cb(WIFI_PROV_LTE_MODE, NULL, 0);
+    }
+
     RELEASE_LOCK(prov_ctx_lock);
 
     return ESP_OK;
