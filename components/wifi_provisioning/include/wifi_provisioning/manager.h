@@ -66,6 +66,11 @@ typedef enum {
      * Signals that manager has been de-initialized
      */
     WIFI_PROV_DEINIT,
+
+    /**
+     * Signals that installation app sent dummy credentials that instruct to use LTE
+     */
+    WIFI_PROV_LTE_MODE,
 } wifi_prov_cb_event_t;
 
 typedef void (*wifi_prov_cb_func_t)(void *user_data, wifi_prov_cb_event_t event, void *event_data);
@@ -536,6 +541,13 @@ esp_err_t wifi_prov_mgr_get_wifi_state(wifi_prov_sta_state_t *state);
  *  - ESP_FAIL  : Provisioning app not running
  */
 esp_err_t wifi_prov_mgr_get_wifi_disconnect_reason(wifi_prov_sta_fail_reason_t *reason);
+
+typedef bool (*check_lte_dummy_credentials_cb_t)(const char*, const char*);
+
+/**
+ * @brief   Registers a function to check for LTE dummy credentials
+ */
+void wifi_prov_mgr_register_lte_dummy_credentials_check_cb(check_lte_dummy_credentials_cb_t cb);
 
 /**
  * @brief   Runs Wi-Fi as Station with the supplied configuration
