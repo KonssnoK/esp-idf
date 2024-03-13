@@ -125,7 +125,7 @@ struct dhcps_t {
     struct netif *dhcps_netif;
     ip4_addr_t broadcast_dhcps;
     ip4_addr_t server_address;
-    ip4_addr_t dns_server;
+    ip4_addr_t dns_server[DNS_TYPE_MAX];
     ip4_addr_t client_address;
     ip4_addr_t client_address_plus;
     ip4_addr_t dhcps_mask;
@@ -153,7 +153,11 @@ dhcps_t *dhcps_new(void)
         return NULL;
     }
     dhcps->dhcps_netif = NULL;
-    dhcps->dns_server.addr = 0;
+
+    for (int i = 0; i < DNS_TYPE_MAX; i++)
+    {
+        dhcps->dns_server[i].addr = 0;
+    }
 #ifdef USE_CLASS_B_NET
     dhcps->dhcps_mask.addr = PP_HTONL(LWIP_MAKEU32(255, 240, 0, 0));
 #else
@@ -441,14 +445,31 @@ static u8_t *add_offer_options(dhcps_t *dhcps, u8_t *optptr)
         }
     }
 
+    // In order of preference
     *optptr++ = DHCP_OPTION_DNS_SERVER;
-    *optptr++ = 4;
     if (dhcps_dns_enabled(dhcps->dhcps_dns)) {
-        *optptr++ = ip4_addr1(&dhcps->dns_server);
-        *optptr++ = ip4_addr2(&dhcps->dns_server);
-        *optptr++ = ip4_addr3(&dhcps->dns_server);
-        *optptr++ = ip4_addr4(&dhcps->dns_server);
+        uint8_t size = 4;
+
+        if (dhcps->dns_server[DNS_TYPE_BACKUP].addr)
+        {
+            size += 4;
+        }
+        *optptr++ = size;
+
+        *optptr++ = ip4_addr1(&dhcps->dns_server[DNS_TYPE_MAIN]);
+        *optptr++ = ip4_addr2(&dhcps->dns_server[DNS_TYPE_MAIN]);
+        *optptr++ = ip4_addr3(&dhcps->dns_server[DNS_TYPE_MAIN]);
+        *optptr++ = ip4_addr4(&dhcps->dns_server[DNS_TYPE_MAIN]);
+
+        if (dhcps->dns_server[DNS_TYPE_BACKUP].addr)
+        {
+            *optptr++ = ip4_addr1(&dhcps->dns_server[DNS_TYPE_BACKUP]);
+            *optptr++ = ip4_addr2(&dhcps->dns_server[DNS_TYPE_BACKUP]);
+            *optptr++ = ip4_addr3(&dhcps->dns_server[DNS_TYPE_BACKUP]);
+            *optptr++ = ip4_addr4(&dhcps->dns_server[DNS_TYPE_BACKUP]);
+        }
     }else {
+        *optptr++ = 4;
         *optptr++ = ip4_addr1(&ipadd);
         *optptr++ = ip4_addr2(&ipadd);
         *optptr++ = ip4_addr3(&ipadd);
@@ -1508,15 +1529,15 @@ bool dhcp_search_ip_on_mac(dhcps_t *dhcps, u8_t *mac, ip4_addr_t *ip)
  * Parameters   : dnsserver -- The DNS server address
  * Returns      : ERR_ARG if invalid handle, ERR_OK on success
 *******************************************************************************/
-err_t dhcps_dns_setserver(dhcps_t *dhcps, const ip_addr_t *dnsserver)
+err_t dhcps_dns_setserver(dhcps_t *dhcps, const ip_addr_t *dnsserver, dns_type_t type)
 {
     if (dhcps == NULL) {
         return ERR_ARG;
     }
     if (dnsserver != NULL) {
-        dhcps->dns_server = *(ip_2_ip4(dnsserver));
+        dhcps->dns_server[type] = *(ip_2_ip4(dnsserver));
     } else {
-        dhcps->dns_server = *(ip_2_ip4(IP_ADDR_ANY));
+        dhcps->dns_server[type] = *(ip_2_ip4(IP_ADDR_ANY));
     }
     return ERR_OK;
 }
@@ -1527,10 +1548,10 @@ err_t dhcps_dns_setserver(dhcps_t *dhcps, const ip_addr_t *dnsserver)
  * Parameters   : none
  * Returns      : ip4_addr_t
 *******************************************************************************/
-err_t dhcps_dns_getserver(dhcps_t *dhcps, ip4_addr_t *dnsserver)
+err_t dhcps_dns_getserver(dhcps_t *dhcps, ip4_addr_t *dnsserver, dns_type_t type)
 {
     if (dhcps) {
-        *dnsserver = dhcps->dns_server;
+        *dnsserver = dhcps->dns_server[type];
         return ERR_OK;
     }
     return ERR_ARG;
