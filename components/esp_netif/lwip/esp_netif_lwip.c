@@ -1260,13 +1260,32 @@ void esp_netif_free_rx_buffer(void *h, void* buffer)
     esp_netif->driver_free_rx_buffer(esp_netif->driver_handle, buffer);
 }
 
+#define MAC22STR "%02X%02X%02X%02X%02X%02X"
+
+//#define DUMP_PACKETS
 esp_err_t esp_netif_transmit(esp_netif_t *esp_netif, void* data, size_t len)
 {
+#ifdef DUMP_PACKETS
+	ESP_LOGI(TAG,"SEND  %10s %4d "MAC22STR" "MAC22STR" %02X%02X",
+        esp_netif->if_desc, len,
+        ((char*)data)[0],((char*)data)[1],((char*)data)[2],((char*)data)[3],((char*)data)[4],((char*)data)[5],
+        ((char*)data)[6],((char*)data)[7],((char*)data)[8],((char*)data)[9],((char*)data)[10],((char*)data)[11],
+        ((char*)data)[12],((char*)data)[13]
+    );
+#endif
     return (esp_netif->driver_transmit)(esp_netif->driver_handle, data, len);
 }
 
 esp_err_t esp_netif_transmit_wrap(esp_netif_t *esp_netif, void *data, size_t len, void *pbuf)
 {
+#ifdef DUMP_PACKETS
+    char* buf = (char*)malloc((len*2)+1);
+    for(int i = 0; i < len; ++i) {
+        sprintf(&buf[i*2], "%02X", ((char*)data)[i]);
+    }
+    ESP_LOGI(TAG,"SENDW %10s %4d %s", esp_netif->if_desc, len, buf);
+    free(buf);
+#endif
     return (esp_netif->driver_transmit_wrap)(esp_netif->driver_handle, data, len, pbuf);
 }
 
@@ -1276,6 +1295,14 @@ esp_err_t esp_netif_receive(esp_netif_t *esp_netif, void *buffer, size_t len, vo
     return esp_netif->lwip_input_fn(esp_netif->netif_handle, buffer, len, eb);
 #else
     esp_netif->lwip_input_fn(esp_netif->netif_handle, buffer, len, eb);
+#ifdef DUMP_PACKETS
+    char* buf = (char*)malloc((len*2)+1);
+    for(int i = 0; i < len; ++i) {
+        sprintf(&buf[i*2], "%02X", ((char*)buffer)[i]);
+    }
+    ESP_LOGW(TAG,"RECV  %10s %4d %s", esp_netif->if_desc, len, buf);
+    free(buf);
+#endif
     return ESP_OK;
 #endif
 }

@@ -176,6 +176,7 @@ static void esp_ping_thread(void *args)
                     }
                 }
                 if (pdMS_TO_TICKS(ep->interval_ms)) {
+                    vTaskDelay(pdMS_TO_TICKS(ep->interval_ms));
                     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ep->interval_ms)); // to get a more accurate delay
                 }
             }

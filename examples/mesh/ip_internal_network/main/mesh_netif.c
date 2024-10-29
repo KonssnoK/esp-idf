@@ -91,6 +91,17 @@ static void receive_task(void *arg)
             ESP_LOGE(TAG, "Received with err code %d %s", err, esp_err_to_name(err));
             continue;
         }
+
+//#define DUMP_PACKETS
+#ifdef DUMP_PACKETS
+    char* buf = (char*)malloc((data.size*2)+1);
+    for(int i = 0; i < data.size; ++i) {
+        sprintf(&buf[i*2], "%02X", ((char*)data.data)[i]);
+    }
+    ESP_LOGW(TAG,"MESHRECV  %d %4d %s", data.proto, data.size, buf);
+    free(buf);
+#endif
+
         if (data.proto == MESH_PROTO_BIN && s_mesh_raw_recv_cb) {
             s_mesh_raw_recv_cb(&from, &data);
         }
@@ -388,6 +399,14 @@ static esp_netif_t* create_mesh_link_sta(void)
 
 esp_err_t mesh_netif_start_root_ap(bool is_root, uint32_t addr)
 {
+    if (netif_ap) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_dhcps_stop(netif_ap));
+        esp_netif_action_disconnected(netif_ap, NULL, 0, NULL);
+        mesh_delete_if_driver(esp_netif_get_io_driver(netif_ap));
+        esp_netif_destroy(netif_ap);
+        netif_ap = NULL;
+    }
+
     if (is_root) {
         destory_mesh_link_ap();
         netif_ap = create_mesh_link_ap();
