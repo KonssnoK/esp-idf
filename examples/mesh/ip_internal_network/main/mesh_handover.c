@@ -9,11 +9,12 @@
 #include "os.h"
 //#include "mesh_driver.h"
 #include "esp_event.h"
-#include "esp_event_legacy.h"
 #include "esp_netif_types.h"
 #include "esp_wifi.h"
 #include "mesh_netif.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_timer.h"
 //#include "hardware.h"
 //#include "modem.h"
 
@@ -75,17 +76,17 @@ error_t modem_stop(void)
     if (err) {
         ESP_LOGW(TAG, "stop 0x%02X", err);
     }
-    return ERR_OK;
+    return ESP_OK;
 }
 
 bool hardware_has_modem(void)
 {
-    return false;
     //uint8_t root[6] = {};
     uint8_t mac[6];
     esp_base_mac_addr_get(mac);
 
-    return mac[5] == 0x04;
+    //ESP_LOGW(TAG, "mac "MACSTR, MAC2STR(mac));
+    return (mac[4] == 0x9E && mac[5] == 0xD4);
     //return memcmp(root, mac, 6);
 }
 //FAKE MODEM END
@@ -158,10 +159,10 @@ void mesh_handover_wifi_probe_callback()
         int probe_threshold = MESH_MODEM_WIFI_PROBE_THRESHOLD;
         if (self->lte_forced_handover) {
             // In case the handover was forced by the fact that we were failing
-            // to connect to the wifi, we wait 30 minutes before checking for external connectivity
+            // to connect to the wifi, we wait 60 minutes before checking for external connectivity
             probe_threshold = MESH_MODEM_WIFI_PROBE_FORCED_THRESHOLD;
         }
-        // The scan for the root device is ignored here to avoid
+        // The scan from the root device is ignored here to avoid
         // shifting from frequency to frequency looking for wifi
         // while the other devices are trying to connect!
         if (self->timer_wifi_probe_root_count < probe_threshold) {
@@ -433,7 +434,7 @@ void mesh_handover_wifi_scan_done(int num)
             }
 
             if (update) {
-                ESP_LOGW(TAG, "Possible parent found[%d][%d] L%d %ddB",
+                ESP_LOGW(TAG, "Possible parent found[%ld][%d] L%d %ddB",
                     update, self->allow_low_rssi_connections,
                     assoc.layer,
                     record.rssi
@@ -441,7 +442,9 @@ void mesh_handover_wifi_scan_done(int num)
                 mesh_handover_store_scan_result(&best_result, &record, &assoc);
             }
 
-        } else {
+        } else if (hardware_has_modem() || !self->lte_forced_handover) {
+            // LTE devices always check for WIFIs because they can do it in parallel.
+            // NON-LTE devices check for WIFIs only if they didn't forcedly fail
             // This is a normal WIFI access point
             ESP_LOGI(TAG, "[%d]%s, "MACSTR", channel:%u, rssi:%d", i,
                 record.ssid, MAC2STR(record.bssid), record.primary,
@@ -460,7 +463,12 @@ void mesh_handover_wifi_scan_done(int num)
         return;
     }
 
-    ESP_LOGW(TAG, "scan_done: found %d, fixed_root %d, has_parent %d", best_result.found, !esp_mesh_get_self_organized(), self->fixed_root_has_parent);
+    ESP_LOGW(TAG, "scan_done: found %d, fixed_root %d, has_parent %d, forced %d",
+        best_result.found,
+        !esp_mesh_get_self_organized(),
+        self->fixed_root_has_parent,
+        self->lte_forced_handover
+    );
 
     if (!best_result.found) {
         if (found_idles) {
@@ -500,7 +508,7 @@ void mesh_handover_wifi_scan_done(int num)
                 self->fixed_root_has_parent = false;
             }
 
-            ESP_LOGW(TAG, "Old Parent "MACSTR" new "MACSTR" [%d]. %s",
+            ESP_LOGW(TAG, "Old Parent "MACSTR" new "MACSTR" [%ld]. %s",
                 MAC2STR(last_result->parent_record.bssid),
                 MAC2STR(best_result.parent_record.bssid),
                 self->last_scan_count,
@@ -659,6 +667,7 @@ void mesh_handover_root_fixed(bool fixed)
 {
 #ifdef MESH_HANDLE_MODEM_HANDOVER
     if (fixed) {
+        self->lte_forced_handover = true;
         //ensure all devices can change to fixed-root network ASAP
         self->master_active = true;
         mesh_handover_disconnect_callback();
@@ -759,6 +768,22 @@ void mesh_handover_check_lte_only_mode(void)
     //    mesh_handover_disconnect_callback();
     //}
 #endif
+}
+
+void mesh_handover_start()
+{
+    if (!self->init) {
+        ESP_LOGW(TAG, "Start called before init");
+        return;
+    }
+
+    if (!hardware_has_modem()) {
+        return;
+    }
+
+    if (modem_get_state() == MODEM_CONNECTED) {
+        mesh_handover_disconnect_callback();
+    }
 }
 
 void mesh_handover_stop()

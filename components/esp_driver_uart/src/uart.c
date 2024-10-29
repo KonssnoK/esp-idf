@@ -1294,6 +1294,11 @@ static void UART_ISR_ATTR uart_rx_intr_handler_default(void *param)
         }
 
         if (uart_event.type != UART_EVENT_MAX && p_uart->event_queue) {
+#ifndef CONFIG_UART_ISR_IN_IRAM     //Only log if ISR is not in IRAM
+            if(uart_event.type == UART_DATA){
+                //ESP_EARLY_LOGE(UART_TAG, "RX");
+            }
+#endif
             sent = xQueueSendFromISR(p_uart->event_queue, (void *)&uart_event, &HPTaskAwoken);
             need_yield |= (HPTaskAwoken == pdTRUE);
             if (sent == pdFALSE) {
@@ -1398,6 +1403,9 @@ static int uart_tx_all(uart_port_t uart_num, const char *src, size_t size, bool 
     xSemaphoreTake(p_uart_obj[uart_num]->tx_mux, (TickType_t)portMAX_DELAY);
 #if PROTECT_APB
     esp_pm_lock_acquire(p_uart_obj[uart_num]->pm_lock);
+#endif
+#ifndef CONFIG_UART_ISR_IN_IRAM     //Only log if ISR is not in IRAM
+    //ESP_EARLY_LOGE(UART_TAG, "TX");
 #endif
     p_uart_obj[uart_num]->coll_det_flg = false;
     if (p_uart_obj[uart_num]->tx_buf_size > 0) {

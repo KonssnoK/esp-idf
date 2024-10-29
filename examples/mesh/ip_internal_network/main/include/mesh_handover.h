@@ -34,6 +34,10 @@ void mesh_handover_parent_disconnected(bool forced, bool dont_reconnect);
 void mesh_handover_root_fixed(bool fixed);
 void mesh_handover_wifi_scan_done(int num);
 void mesh_handover_check_lte_only_mode(void);
+void mesh_handover_start();
 void mesh_handover_stop();
 bool mesh_handover_is_transitioning();
 int mesh_handover_get_stats(mesh_addr_t* parent);
+
+
+bool hardware_has_modem(void);

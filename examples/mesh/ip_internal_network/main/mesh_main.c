@@ -300,7 +300,7 @@ static void mesh_track_child_connect(mesh_event_child_connected_t* child_connect
         } else {
             ESP_LOGE(TAG, "Child connection with no free slots! "MACSTR_COMPACT, MAC2STR(child_connected->mac));
             for (int i = 0; i < CONFIG_MESH_AP_CONNECTIONS; ++i) {
-                ESP_LOGW(TAG, "%04X %d", self->children[i].mac, self->children[i].connection_count);
+                ESP_LOGW(TAG, "%04lX %d", self->children[i].mac, self->children[i].connection_count);
             }
         }
     }
@@ -388,6 +388,7 @@ static bool mesh_check_forced_handover(int reason)
 
     if (mesh_handover_is_transitioning()) {
         // In case we already triggered a forced handover we ignore counters
+        ESP_LOGW(TAG, "Ignore counters while transitioning. error %d", reason);
         return force;
     }
 
@@ -396,7 +397,7 @@ static bool mesh_check_forced_handover(int reason)
         if (reason == entry->reason) {
             entry->counter++;
 
-            ESP_LOGI(TAG, "Counting wifi error %d, new count %d", reason, entry->counter);
+            ESP_LOGW(TAG, "Counting wifi error %d, new count %ld", reason, entry->counter);
 
             if (entry->counter >= entry->reset_at) {
                 ESP_LOGW(TAG, "Counter exceeds max value, force transition");
@@ -506,11 +507,11 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
     case MESH_EVENT_PARENT_DISCONNECTED: {
         mesh_event_disconnected_t *disconnected = (mesh_event_disconnected_t *)event_data;
         ESP_LOGI(MESH_TAG,
-                 "<MESH_EVENT_PARENT_DISCONNECTED>reason:%d",
-                 disconnected->reason);
-        mesh_layer = esp_mesh_get_layer();
-        mesh_netifs_stop();
+                 "<MESH_EVENT_PARENT_DISCONNECTED>reason:%d %s",
+                 disconnected->reason,
+                 esp_err_to_name(disconnected->reason));
 
+        mesh_layer = esp_mesh_get_layer();
 
         bool force = mesh_check_forced_handover(disconnected->reason);
 
@@ -675,7 +676,7 @@ static void test_on_ping_success(esp_ping_handle_t hdl, void *args)
     esp_ping_get_profile(hdl, ESP_PING_PROF_IPADDR, &target_addr, sizeof(target_addr));
     esp_ping_get_profile(hdl, ESP_PING_PROF_SIZE, &recv_len, sizeof(recv_len));
     esp_ping_get_profile(hdl, ESP_PING_PROF_TIMEGAP, &elapsed_time, sizeof(elapsed_time));
-    ESP_LOGW(TAG, "%d bytes from %s icmp_seq=%d ttl=%d time=%d ms",
+    ESP_LOGW(TAG, "%ld bytes from %s icmp_seq=%d ttl=%d time=%ld ms",
            recv_len, ipaddr_ntoa(&target_addr), seqno, ttl, elapsed_time);
 }
 
@@ -697,7 +698,7 @@ static void test_on_ping_end(esp_ping_handle_t hdl, void *args)
     esp_ping_get_profile(hdl, ESP_PING_PROF_REQUEST, &transmitted, sizeof(transmitted));
     esp_ping_get_profile(hdl, ESP_PING_PROF_REPLY, &received, sizeof(received));
     esp_ping_get_profile(hdl, ESP_PING_PROF_DURATION, &total_time_ms, sizeof(total_time_ms));
-    ESP_LOGW(TAG, "%d packets transmitted, %d received, time %dms", transmitted, received, total_time_ms);
+    ESP_LOGW(TAG, "%ld packets transmitted, %ld received, time %ldms", transmitted, received, total_time_ms);
 }
 
 void app_main(void)
@@ -710,13 +711,20 @@ void app_main(void)
     /*  crete network interfaces for mesh (only station instance saved for further manipulation, soft AP instance ignored */
     ESP_ERROR_CHECK(mesh_netifs_init(recv_cb));
 
+    esp_log_level_set("mesh", ESP_LOG_DEBUG);
+
+
     /*  wifi initialization */
     wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&config));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &ip_event_handler, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     ESP_ERROR_CHECK(esp_wifi_start());
+#define WIFI_POWER_2DB  (8)
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_POWER_2DB));
+
     /*  mesh initialization */
     ESP_ERROR_CHECK(esp_mesh_init());
     ESP_ERROR_CHECK(esp_event_handler_register(MESH_EVENT, ESP_EVENT_ANY_ID, &mesh_event_handler, NULL));
@@ -779,8 +787,8 @@ void app_main(void)
 
 #define DUMP_INTERVAL_MS (1000*60*2 / portTICK_PERIOD_MS)
 #define DUMP_TASK_INTERVAL_MS (1000*60 / portTICK_PERIOD_MS)
-    int64_t last_dump = 0;
-    int64_t task_dump = 0;
+    //int64_t last_dump = 0;
+    //int64_t task_dump = 0;
     /*while (true) {
         if((xTaskGetTickCount() - last_dump) >= DUMP_INTERVAL_MS) {
             last_dump = xTaskGetTickCount();
