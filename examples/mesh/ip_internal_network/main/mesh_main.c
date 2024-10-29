@@ -17,6 +17,8 @@
 #include "mesh_netif.h"
 #include "driver/gpio.h"
 #include "freertos/semphr.h"
+#include <ping/ping_sock.h>
+#include "mesh_handover.h"
 
 /*******************************************************
  *                Macros
@@ -33,7 +35,15 @@
  *                Constants
  *******************************************************/
 static const char *MESH_TAG = "mesh_main";
+static const char *TAG = "ping";
 static const uint8_t MESH_ID[6] = { 0x77, 0x77, 0x77, 0x77, 0x77, 0x76};
+
+
+#define MACSTR_COMPACT "%02X%02X%02X%02X%02X%02X"
+#define MESH_THRESHOLD_3    (3)
+#define MESH_THRESHOLD_10   (10)
+#define array_size(x)	(sizeof(x) / sizeof(x[0]))
+
 
 /*******************************************************
  *                Variable Definitions
@@ -47,6 +57,51 @@ static int s_route_table_size = 0;
 static SemaphoreHandle_t s_route_table_lock = NULL;
 static uint8_t s_mesh_tx_payload[CONFIG_MESH_ROUTE_TABLE_SIZE*6+1];
 
+typedef struct config_mesh_ {
+    int max_layer;          // CONFIG_MESH_MAX_LAYER
+    float vote_percentage;  //
+    int ap_assoc_expire;    //
+    uint8_t ap_auth_mode;
+    // Mesh AP  settings
+    uint8_t ap_max_connections;
+    uint8_t ap_nonmesh_max_connections;
+} config_mesh_t;
+
+typedef struct mesh_child_ {
+    int8_t connection_count;
+    uint32_t mac;
+} mesh_child_t;
+
+typedef struct mesh_self_ {
+    int mesh_layer;
+    mesh_addr_t mesh_parent_addr;
+    bool is_initialized;
+    config_mesh_t config_mesh;
+    bool had_internet;
+    bool has_internet;
+
+    bool task_started;
+
+    uint32_t counter_no_parent;
+    uint32_t wifi_empty_scan;
+
+    mesh_child_t children[CONFIG_MESH_AP_CONNECTIONS];
+    mesh_reset_cb_t reset_callback;
+} mesh_self_t;
+
+static mesh_self_t priv_self = {
+    .mesh_layer = -1,
+        .config_mesh.max_layer = CONFIG_MESH_MAX_LAYER,
+        .config_mesh.vote_percentage = 1,
+        .config_mesh.ap_assoc_expire = 10,
+        .config_mesh.ap_auth_mode = CONFIG_MESH_AP_AUTHMODE,
+        .config_mesh.ap_max_connections = CONFIG_MESH_AP_CONNECTIONS,
+        .config_mesh.ap_nonmesh_max_connections = CONFIG_MESH_NON_MESH_AP_CONNECTIONS,
+};
+static mesh_self_t* self = &priv_self;
+
+
+
 
 /*******************************************************
  *                Function Declarations
@@ -58,6 +113,41 @@ void mqtt_app_publish(char* topic, char *publish_string);
 /*******************************************************
  *                Function Definitions
  *******************************************************/
+
+
+/** 'tasks' command prints the list of tasks and related information */
+#define WITH_TASKS_INFO 1
+#if WITH_TASKS_INFO
+
+static int tasks_info()
+{
+    const size_t bytes_per_task = 40; /* see vTaskList description */
+    char *task_list_buffer = malloc(uxTaskGetNumberOfTasks() * bytes_per_task);
+    if (task_list_buffer == NULL) {
+        ESP_LOGE(TAG, "failed to allocate buffer for vTaskList output");
+        return 1;
+    }
+    ESP_LOGW(TAG, "Task Name\tStatus\tPrio\tHWM\tTask#\tAffinity");
+    vTaskList(task_list_buffer);
+    ESP_LOGW(TAG, "%s", task_list_buffer);
+    free(task_list_buffer);
+    return 0;
+}
+
+/*static void register_tasks(void)
+{
+    const esp_console_cmd_t cmd = {
+    .command = "tasks",
+    .help = "Get information about running tasks",
+    .hint = NULL,
+    .func = &tasks_info,
+    };
+    ESP_ERROR_CHECK( esp_console_cmd_register(&cmd) );
+}*/
+
+#endif // WITH_TASKS_INFO
+
+
 
 static void initialise_button(void)
 {
@@ -75,26 +165,26 @@ void static recv_cb(mesh_addr_t *from, mesh_data_t *data)
     if (data->data[0] == CMD_ROUTE_TABLE) {
         int size =  data->size - 1;
         if (s_route_table_lock == NULL || size%6 != 0) {
-            ESP_LOGE(MESH_TAG, "Error in receiving raw mesh data: Unexpected size");
+            ESP_LOGE(MESH_TAG, "CMD_ROUTE_TABLE: Unexpected size %d", size);
             return;
         }
         xSemaphoreTake(s_route_table_lock, portMAX_DELAY);
         s_route_table_size = size / 6;
         for (int i=0; i < s_route_table_size; ++i) {
-            ESP_LOGI(MESH_TAG, "Received Routing table [%d] "
+            ESP_LOGD(MESH_TAG, "Received Routing table [%d] "
                     MACSTR, i, MAC2STR(data->data + 6*i + 1));
         }
         memcpy(&s_route_table, data->data + 1, size);
         xSemaphoreGive(s_route_table_lock);
     } else if (data->data[0] == CMD_KEYPRESSED) {
         if (data->size != 7) {
-            ESP_LOGE(MESH_TAG, "Error in receiving raw mesh data: Unexpected size");
+            ESP_LOGE(MESH_TAG, "CMD_KEYPRESSED: Unexpected size %d", data->size);
             return;
         }
         ESP_LOGW(MESH_TAG, "Keypressed detected on node: "
                 MACSTR, MAC2STR(data->data + 1));
     } else {
-        ESP_LOGE(MESH_TAG, "Error in receiving raw mesh data: Unknown command");
+        ESP_LOGE(MESH_TAG, "Error in receiving raw mesh data: Unknown command 0x%02X", data->data[0]);
     }
 }
 
@@ -164,7 +254,7 @@ void esp_mesh_mqtt_task(void *arg)
             data.data = s_mesh_tx_payload;
             for (int i = 0; i < s_route_table_size; i++) {
                 err = esp_mesh_send(&s_route_table[i], &data, MESH_DATA_P2P, NULL, 0);
-                ESP_LOGI(MESH_TAG, "Sending routing table to [%d] "
+                ESP_LOGD(MESH_TAG, "Sending routing table to [%d] "
                         MACSTR ": sent with err code: %d", i, MAC2STR(s_route_table[i].addr), err);
             }
         }
@@ -177,14 +267,154 @@ esp_err_t esp_mesh_comm_mqtt_task_start(void)
 {
     static bool is_comm_mqtt_task_started = false;
 
-    s_route_table_lock = xSemaphoreCreateMutex();
-
     if (!is_comm_mqtt_task_started) {
         xTaskCreate(esp_mesh_mqtt_task, "mqtt task", 3072, NULL, 5, NULL);
         xTaskCreate(check_button, "check button task", 3072, NULL, 5, NULL);
         is_comm_mqtt_task_started = true;
     }
     return ESP_OK;
+}
+
+
+static void mesh_track_child_connect(mesh_event_child_connected_t* child_connected)
+{
+    // Keep track of connected children
+    bool found = false;
+    int8_t firstfreeslot = -1;
+    uint32_t child_mac = ((child_connected->mac[2] << 24) | (child_connected->mac[3] << 16) | (child_connected->mac[4] << 8) | (child_connected->mac[5]));
+
+    for (int i = 0; i < CONFIG_MESH_AP_CONNECTIONS; ++i) {
+        if (self->children[i].mac == child_mac) {
+            found = true;
+            self->children[i].connection_count++;
+            break;
+        } else if (!self->children[i].mac && firstfreeslot < 0) {
+            firstfreeslot = i;
+        }
+    }
+    if (!found) {
+        // Add
+        if (firstfreeslot >= 0) {
+            self->children[firstfreeslot].mac = child_mac;
+            self->children[firstfreeslot].connection_count = 1;
+        } else {
+            ESP_LOGE(TAG, "Child connection with no free slots! "MACSTR_COMPACT, MAC2STR(child_connected->mac));
+            for (int i = 0; i < CONFIG_MESH_AP_CONNECTIONS; ++i) {
+                ESP_LOGW(TAG, "%04X %d", self->children[i].mac, self->children[i].connection_count);
+            }
+        }
+    }
+}
+
+static void mesh_track_child_disconnect(mesh_event_child_disconnected_t* child_disconnected)
+{
+    // We keep track of connected children and check for strange behavior
+    bool found = false;
+    int8_t firstfreeslot = -1;
+    uint32_t child_mac = ((child_disconnected->mac[2] << 24) | (child_disconnected->mac[3] << 16) | (child_disconnected->mac[4] << 8) | (child_disconnected->mac[5]));
+
+    for (int i = 0; i < CONFIG_MESH_AP_CONNECTIONS; ++i) {
+        if (self->children[i].mac == child_mac) {
+            found = true;
+            self->children[i].connection_count--;
+            if (!self->children[i].connection_count) {
+                // Remove from list
+                self->children[i].mac = 0;
+            } else if (self->children[i].connection_count < -2) {
+                // We saw this happening when the ROOT stops accepting children for no reason.
+                // A reboot solved the issue -> workaround
+                ESP_LOGE(TAG, "Negative children count! Reset mesh...");
+
+                // The mesh task cannot reset itself. Someone else has to do it.
+                self->reset_callback();
+                // Clean the state of the children to allow time for reset
+                memset(self->children, 0, sizeof(mesh_child_t) * CONFIG_MESH_AP_CONNECTIONS);
+            }
+            break;
+        } else if (!self->children[i].mac && firstfreeslot < 0) {
+            firstfreeslot = i;
+        }
+    }
+    if (!found) {
+        ESP_LOGW(TAG, "Disconnection from non registered child! "MACSTR_COMPACT, MAC2STR(child_disconnected->mac));
+        if (firstfreeslot >= 0) {
+            self->children[firstfreeslot].mac = child_mac;
+            self->children[firstfreeslot].connection_count = -1;
+        }
+    }
+}
+
+
+// Run from esp_events
+static void callback_handover_disconnect(void* args)
+{
+    mesh_handover_disconnect_callback();
+}
+
+// Run from esp_events
+static void callback_handover_reconnect(void* args)
+{
+    mesh_handover_reconnect_callback();
+}
+
+// Run from esp_events
+static void callback_handover_wifi_probe(void* args)
+{
+    mesh_handover_wifi_probe_callback();
+}
+
+static bool mesh_check_forced_handover(int reason)
+{
+    typedef struct {
+        int reason;         // wifi_err_reason_t or mesh_disconnect_reason_t
+        uint32_t counter;
+        uint32_t reset_at;
+    } error_map_entry_t;
+    static error_map_entry_t error_mapping[] = {
+        {.reason = WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT, .counter = 0, .reset_at = MESH_THRESHOLD_10 },
+        {.reason = WIFI_REASON_AUTH_EXPIRE,            .counter = 0, .reset_at = MESH_THRESHOLD_10 },
+        {.reason = WIFI_REASON_CONNECTION_FAIL,        .counter = 0, .reset_at = MESH_THRESHOLD_10 },
+        {.reason = MESH_REASON_PARENT_IDLE,            .counter = 0, .reset_at = MESH_THRESHOLD_10 },
+    };
+
+    // When the device has the correct SSID but for some reason
+    // cannot connect with the given password (e.g. due to changed
+    // settings in the access point) we get this error. Also,
+    // the device seems not to connect to the mesh if it is in this
+    // state, so it isolates itself. By explicly forcing the fixed
+    // root handover the device might recover.
+
+    bool force = false;
+
+    if (mesh_handover_is_transitioning()) {
+        // In case we already triggered a forced handover we ignore counters
+        return force;
+    }
+
+    for (int i = 0; i < array_size(error_mapping); i++) {
+        error_map_entry_t* entry = &error_mapping[i];
+        if (reason == entry->reason) {
+            entry->counter++;
+
+            ESP_LOGI(TAG, "Counting wifi error %d, new count %d", reason, entry->counter);
+
+            if (entry->counter >= entry->reset_at) {
+                ESP_LOGW(TAG, "Counter exceeds max value, force transition");
+                force = true;
+            }
+
+            break;
+        }
+    }
+
+    if (force) {
+        for (int i = 0; i < array_size(error_mapping); i++) {
+            error_map_entry_t* entry = &error_mapping[i];
+            entry->counter = 0;
+        }
+    }
+
+    return force;
 }
 
 void mesh_event_handler(void *arg, esp_event_base_t event_base,
@@ -210,6 +440,9 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_CHILD_CONNECTED>aid:%d, "MACSTR"",
                  child_connected->aid,
                  MAC2STR(child_connected->mac));
+
+        mesh_track_child_connect(child_connected);
+
     }
     break;
     case MESH_EVENT_CHILD_DISCONNECTED: {
@@ -217,6 +450,8 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_CHILD_DISCONNECTED>aid:%d, "MACSTR"",
                  child_disconnected->aid,
                  MAC2STR(child_disconnected->mac));
+
+        mesh_track_child_disconnect(child_disconnected);
     }
     break;
     case MESH_EVENT_ROUTING_TABLE_ADD: {
@@ -237,6 +472,16 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         mesh_event_no_parent_found_t *no_parent = (mesh_event_no_parent_found_t *)event_data;
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_NO_PARENT_FOUND>scan times:%d",
                  no_parent->scan_times);
+
+        // This counter gets normally reset by is_rootless being called right after
+        // If this does not happen it means we are switching between LTE and WIFI without
+        // managing to connect to the WIFI -> force a fixed handover to continue on LTE
+        self->counter_no_parent++;
+        bool force = self->counter_no_parent > MESH_THRESHOLD_3;
+        if (force) {
+            self->counter_no_parent = 0;
+        }
+        mesh_handover_no_parent_found(force);
     }
     /* TODO handler for the failure */
     break;
@@ -252,6 +497,10 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                  (mesh_layer == 2) ? "<layer2>" : "", MAC2STR(id.addr));
         last_layer = mesh_layer;
         mesh_netifs_start(esp_mesh_is_root());
+
+
+        mesh_handover_parent_connected();
+
     }
     break;
     case MESH_EVENT_PARENT_DISCONNECTED: {
@@ -261,6 +510,17 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
                  disconnected->reason);
         mesh_layer = esp_mesh_get_layer();
         mesh_netifs_stop();
+
+
+        bool force = mesh_check_forced_handover(disconnected->reason);
+
+        bool dont_reconnect = (disconnected->reason == MESH_REASON_CYCLIC) ||
+            (disconnected->reason == MESH_REASON_PARENT_IDLE) ||
+            (disconnected->reason == WIFI_REASON_ASSOC_TOOMANY) ||
+            (disconnected->reason == MESH_REASON_SCAN_FAIL);
+
+        mesh_handover_parent_disconnected(force, dont_reconnect);
+
     }
     break;
     case MESH_EVENT_LAYER_CHANGE: {
@@ -309,13 +569,17 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
     break;
     case MESH_EVENT_TODS_STATE: {
         mesh_event_toDS_state_t *toDs_state = (mesh_event_toDS_state_t *)event_data;
-        ESP_LOGI(MESH_TAG, "<MESH_EVENT_TODS_REACHABLE>state:%d", *toDs_state);
+        ESP_LOGW(MESH_TAG, "<MESH_EVENT_TODS_REACHABLE>state:%d", *toDs_state);
     }
     break;
     case MESH_EVENT_ROOT_FIXED: {
         mesh_event_root_fixed_t *root_fixed = (mesh_event_root_fixed_t *)event_data;
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_ROOT_FIXED>%s",
                  root_fixed->is_fixed ? "fixed" : "not fixed");
+
+
+
+        mesh_handover_root_fixed(root_fixed->is_fixed);
     }
     break;
     case MESH_EVENT_ROOT_ASKED_YIELD: {
@@ -336,12 +600,28 @@ void mesh_event_handler(void *arg, esp_event_base_t event_base,
         mesh_event_scan_done_t *scan_done = (mesh_event_scan_done_t *)event_data;
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_SCAN_DONE>number:%d",
                  scan_done->number);
+
+        mesh_handover_wifi_scan_done(scan_done->number);
+
+        if (!scan_done->number) {
+            self->wifi_empty_scan++;
+            if (self->wifi_empty_scan > MESH_THRESHOLD_10) {
+                ESP_LOGE(TAG, "Wifi cannot scan. Reset.");
+                esp_restart();
+            }
+        } else {
+            self->wifi_empty_scan = 0;
+        }
     }
     break;
     case MESH_EVENT_NETWORK_STATE: {
         mesh_event_network_state_t *network_state = (mesh_event_network_state_t *)event_data;
         ESP_LOGI(MESH_TAG, "<MESH_EVENT_NETWORK_STATE>is_rootless:%d",
                  network_state->is_rootless);
+        if (network_state->is_rootless) {
+                // This happens after a MESH_EVENT_NO_PARENT_FOUND unless we are stuck
+                self->counter_no_parent = 0;
+        }
     }
     break;
     case MESH_EVENT_STOP_RECONNECTION: {
@@ -381,6 +661,44 @@ void ip_event_handler(void *arg, esp_event_base_t event_base,
     esp_mesh_comm_mqtt_task_start();
 }
 
+static void test_on_ping_success(esp_ping_handle_t hdl, void *args)
+{
+    // optionally, get callback arguments
+    // const char* str = (const char*) args;
+    // printf("%s\r\n", str); // "foo"
+    uint8_t ttl;
+    uint16_t seqno;
+    uint32_t elapsed_time, recv_len;
+    ip_addr_t target_addr;
+    esp_ping_get_profile(hdl, ESP_PING_PROF_SEQNO, &seqno, sizeof(seqno));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_TTL, &ttl, sizeof(ttl));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_IPADDR, &target_addr, sizeof(target_addr));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_SIZE, &recv_len, sizeof(recv_len));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_TIMEGAP, &elapsed_time, sizeof(elapsed_time));
+    ESP_LOGW(TAG, "%d bytes from %s icmp_seq=%d ttl=%d time=%d ms",
+           recv_len, ipaddr_ntoa(&target_addr), seqno, ttl, elapsed_time);
+}
+
+static void test_on_ping_timeout(esp_ping_handle_t hdl, void *args)
+{
+    uint16_t seqno;
+    ip_addr_t target_addr;
+    esp_ping_get_profile(hdl, ESP_PING_PROF_SEQNO, &seqno, sizeof(seqno));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_IPADDR, &target_addr, sizeof(target_addr));
+    ESP_LOGW(TAG, "From %s icmp_seq=%d timeout", ipaddr_ntoa(&target_addr), seqno);
+}
+
+static void test_on_ping_end(esp_ping_handle_t hdl, void *args)
+{
+    uint32_t transmitted;
+    uint32_t received;
+    uint32_t total_time_ms;
+
+    esp_ping_get_profile(hdl, ESP_PING_PROF_REQUEST, &transmitted, sizeof(transmitted));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_REPLY, &received, sizeof(received));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_DURATION, &total_time_ms, sizeof(total_time_ms));
+    ESP_LOGW(TAG, "%d packets transmitted, %d received, time %dms", transmitted, received, total_time_ms);
+}
 
 void app_main(void)
 {
@@ -426,8 +744,52 @@ void app_main(void)
     memcpy((uint8_t *) &cfg.mesh_ap.password, CONFIG_MESH_AP_PASSWD,
            strlen(CONFIG_MESH_AP_PASSWD));
     ESP_ERROR_CHECK(esp_mesh_set_config(&cfg));
+    ESP_ERROR_CHECK(esp_mesh_allow_root_conflicts(false));
+    ESP_ERROR_CHECK(esp_mesh_send_block_time(30000));
+
+    mesh_handover_init(&cfg.router,
+        callback_handover_disconnect,
+        callback_handover_reconnect,
+        callback_handover_wifi_probe
+    );
+
     /* mesh start */
     ESP_ERROR_CHECK(esp_mesh_start());
     ESP_LOGI(MESH_TAG, "mesh starts successfully, heap:%" PRId32 ", %s",  esp_get_free_heap_size(),
              esp_mesh_is_root_fixed() ? "root fixed" : "root not fixed");
+
+    s_route_table_lock = xSemaphoreCreateMutex();
+
+
+    esp_ping_config_t ping_config = ESP_PING_DEFAULT_CONFIG();
+    IP_ADDR4(&ping_config.target_addr, 8,8,8,8);          // target IP address
+    ping_config.count = ESP_PING_COUNT_INFINITE;    // ping in infinite mode, esp_ping_stop can stop it
+    ping_config.timeout_ms = 3000;
+
+    /* set callback functions */
+    esp_ping_callbacks_t cbs;
+    cbs.on_ping_success = test_on_ping_success;
+    cbs.on_ping_timeout = test_on_ping_timeout;
+    cbs.on_ping_end = test_on_ping_end;
+    cbs.cb_args = "foo";  // arguments that will feed to all callback functions, can be NULL
+
+    esp_ping_handle_t ping;
+    esp_ping_new_session(&ping_config, &cbs, &ping);
+    esp_ping_start(ping);
+
+#define DUMP_INTERVAL_MS (1000*60*2 / portTICK_PERIOD_MS)
+#define DUMP_TASK_INTERVAL_MS (1000*60 / portTICK_PERIOD_MS)
+    int64_t last_dump = 0;
+    int64_t task_dump = 0;
+    /*while (true) {
+        if((xTaskGetTickCount() - last_dump) >= DUMP_INTERVAL_MS) {
+            last_dump = xTaskGetTickCount();
+            esp_wifi_statis_dump(0xFFFF);
+        }
+        if((xTaskGetTickCount() - task_dump) >= DUMP_TASK_INTERVAL_MS) {
+            task_dump = xTaskGetTickCount();
+            tasks_info();
+        }
+        vTaskDelay(1000/portTICK_PERIOD_MS);
+    }*/
 }

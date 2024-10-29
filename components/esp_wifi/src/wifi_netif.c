@@ -36,12 +36,14 @@ static esp_netif_t *s_wifi_netifs[MAX_WIFI_IFS] = { NULL };
  */
 static esp_err_t wifi_sta_receive(void *buffer, uint16_t len, void *eb)
 {
+    //ESP_LOGE(TAG, "RX");
     return s_wifi_rxcbs[WIFI_IF_STA](s_wifi_netifs[WIFI_IF_STA], buffer, len, eb);
 }
 
 #ifdef CONFIG_ESP_WIFI_SOFTAP_SUPPORT
 static esp_err_t wifi_ap_receive(void *buffer, uint16_t len, void *eb)
 {
+    //ESP_LOGE(TAG, "RXA");
     return s_wifi_rxcbs[WIFI_IF_AP](s_wifi_netifs[WIFI_IF_AP], buffer, len, eb);
 }
 #endif
@@ -63,12 +65,14 @@ static void wifi_free(void *h, void* buffer)
 static esp_err_t wifi_transmit(void *h, void *buffer, size_t len)
 {
     wifi_netif_driver_t driver = h;
+    //ESP_LOGE(TAG, "TX");
     return esp_wifi_internal_tx(driver->wifi_if, buffer, len);
 }
 
 static esp_err_t wifi_transmit_wrap(void *h, void *buffer, size_t len, void *netstack_buf)
 {
     wifi_netif_driver_t driver = h;
+    //ESP_LOGE(TAG, "TXW");
 #if CONFIG_SPIRAM
     return esp_wifi_internal_tx_by_ref(driver->wifi_if, buffer, len, netstack_buf);
 #else
