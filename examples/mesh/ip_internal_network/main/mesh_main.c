@@ -36,8 +36,6 @@
  *******************************************************/
 static const char *MESH_TAG = "mesh_main";
 static const char *TAG = "ping";
-static const uint8_t MESH_ID[6] = { 0x77, 0x77, 0x77, 0x77, 0x77, 0x76};
-
 
 #define MACSTR_COMPACT "%02X%02X%02X%02X%02X%02X"
 #define MESH_THRESHOLD_3    (3)
@@ -723,7 +721,8 @@ void app_main(void)
 
     ESP_ERROR_CHECK(esp_wifi_start());
 #define WIFI_POWER_2DB  (8)
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_POWER_2DB));
+#define WIFI_POWER_14DB (56)
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_POWER_14DB));
 
     /*  mesh initialization */
     ESP_ERROR_CHECK(esp_mesh_init());
@@ -738,7 +737,11 @@ void app_main(void)
     cfg.crypto_funcs = NULL;
 #endif
     /* mesh ID */
+    static const uint8_t MESH_ID[6] = { 0x77, 0x77, 0x77, 0x77, 0x77, 0x76};
     memcpy((uint8_t *) &cfg.mesh_id, MESH_ID, 6);
+#define CCONFIG_MESH_AP_PASSWD "MAP_PASSWD"
+    memcpy((uint8_t *) &cfg.mesh_ap.password, CCONFIG_MESH_AP_PASSWD, strlen(CCONFIG_MESH_AP_PASSWD));
+
     /* router */
     cfg.channel = CONFIG_MESH_CHANNEL;
     cfg.router.ssid_len = strlen(CONFIG_MESH_ROUTER_SSID);
@@ -749,8 +752,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_mesh_set_ap_authmode(CONFIG_MESH_AP_AUTHMODE));
     cfg.mesh_ap.max_connection = CONFIG_MESH_AP_CONNECTIONS;
     cfg.mesh_ap.nonmesh_max_connection = CONFIG_MESH_NON_MESH_AP_CONNECTIONS;
-    memcpy((uint8_t *) &cfg.mesh_ap.password, CONFIG_MESH_AP_PASSWD,
-           strlen(CONFIG_MESH_AP_PASSWD));
+
     ESP_ERROR_CHECK(esp_mesh_set_config(&cfg));
     ESP_ERROR_CHECK(esp_mesh_allow_root_conflicts(false));
     ESP_ERROR_CHECK(esp_mesh_send_block_time(30000));
