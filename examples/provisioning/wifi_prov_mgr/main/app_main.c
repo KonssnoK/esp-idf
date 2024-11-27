@@ -18,6 +18,7 @@
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <nvs_flash.h>
+#include <esp_now.h>
 
 #include <wifi_provisioning/manager.h>
 
@@ -214,7 +215,12 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 static void wifi_init_sta(void)
 {
     /* Start Wi-Fi in station mode */
+    // Put back normal wifi settings
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));    // put back storage to RAM, because the wifi_provisioning component in esp-idf plays with it
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
@@ -280,8 +286,18 @@ static void wifi_prov_print_qr(const char *name, const char *username, const cha
     ESP_LOGI(TAG, "If QR code is not visible, copy paste the below URL in a browser.\n%s?data=%s", QRCODE_BASE_URL, payload);
 }
 
+static void espnow_send_cb(const uint8_t* mac_addr, esp_now_send_status_t status)
+{
+}
+static void espnow_recv_cb(const esp_now_recv_info_t* recv_info, const uint8_t* data, int len)
+{
+}
+
 void app_main(void)
 {
+    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("wifi", ESP_LOG_DEBUG);
+
     /* Initialize NVS partition */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -316,6 +332,23 @@ void app_main(void)
 #endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    // Use RAM for wifi configuration to prevent wear out of the flash memory
+    //ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
+    // Change WiFi mode
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR));
+
+    ESP_ERROR_CHECK(esp_wifi_start());
+#define WIFI_POWER_14DB (56)
+#define WIFI_POWER_15DB (60)
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_max_tx_power(WIFI_POWER_14DB));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_channel(7, WIFI_SECOND_CHAN_NONE));
+
+    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
 
     /* Configuration for the provisioning manager */
     wifi_prov_mgr_config_t config = {
@@ -501,13 +534,13 @@ void app_main(void)
     /* Start main application now */
 #if CONFIG_EXAMPLE_REPROVISIONING
     while (1) {
-        for (int i = 0; i < 10; i++) {
-            ESP_LOGI(TAG, "Hello World!");
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-        }
+        ESP_LOGI(TAG, "Hello World!");
 
         /* Resetting provisioning state machine to enable re-provisioning */
         wifi_prov_mgr_reset_sm_state_for_reprovision();
+
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_channel(7, WIFI_SECOND_CHAN_NONE));
 
         /* Wait for Wi-Fi connection */
         xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);
