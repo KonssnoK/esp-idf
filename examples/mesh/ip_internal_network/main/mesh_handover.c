@@ -395,16 +395,12 @@ void mesh_handover_wifi_scan_done(int num)
 
             // Check for best device!
             ESP_LOGW(TAG,
-                "<MESH>"MACSTR", layer:%d/%d, assoc:%d/%d, %d, ch:%u",
+                "<MESH>"MACSTR", layer:%d/%d, assoc:%d/%d, %d, ch:%u [%d] rssi:%d, parent_rssi:%d root_rssi:%d Type %d ",
                 MAC2STR(record.bssid),
                 assoc.layer, assoc.layer_cap,
                 assoc.assoc, assoc.assoc_cap,
                 assoc.layer2_cap,
-                record.primary
-            );
-
-            ESP_LOGW(TAG,
-                "[%d] rssi:%d, parent_rssi:%d root_rssi:%d Type %d ",
+                record.primary,
                 i,
                 record.rssi,
                 assoc.rssi,
@@ -414,7 +410,7 @@ void mesh_handover_wifi_scan_done(int num)
 
             uint32_t update = 0;
 
-#define RECORD_GOOD_RSSI (-78)
+            #define RECORD_GOOD_RSSI (-78)
 
             // If possible always connect to the ROOT
             update = ((assoc.layer == 1) && (record.rssi > RECORD_GOOD_RSSI || self->allow_low_rssi_connections));
@@ -456,7 +452,14 @@ void mesh_handover_wifi_scan_done(int num)
                 // Stop here
                 break;
             }
-        }
+        }/* else {
+
+            ESP_LOGI(TAG, "[%d]%s, "MACSTR", channel:%u, rssi:%d, ie_len %d assoc %d", i,
+                record.ssid, MAC2STR(record.bssid), record.primary,
+                record.rssi,
+                ie_len, sizeof(assoc)
+            );
+        }*/
     }
 
     if (hardware_has_modem()) {
